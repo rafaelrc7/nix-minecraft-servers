@@ -30,6 +30,7 @@ let
   runDir = "/run/nix-minecraft-servers";
 
   enabledServers = filterAttrs (_: server: server.enable) cfg.servers;
+  backupServers = filterAttrs (_: server: server.backup.enable) enabledServers;
 
   eulaFile = pkgs.writeText "minecraft-eula-agreement.txt" ''
     # By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).
@@ -147,23 +148,18 @@ let
     name: serverCfg:
     let
       javaPackage = if serverCfg.javaPackage != null then serverCfg.javaPackage else cfg.javaPackage;
-
       runServerJar = mkRunServerJar javaPackage;
-
       memory = if serverCfg.memory != null then serverCfg.memory else "\${MEM}";
-
       jvmOpts =
         if serverCfg.jvmOpts != null then concatStringsSep " " serverCfg.jvmOpts else "\${JVM_OPTS}";
-
       serverJar =
         if builtins.typeOf serverCfg.server == "string" || builtins.typeOf serverCfg.server == "path" then
           toString serverCfg.server
         else
           null;
-
       execStart =
         if serverJar != null then
-          "${runServerJar} ${serverJar} -Xms${memory} -Xmx${memory} ${jvmOpts}"
+          ''${runServerJar} "${serverJar}" -Xms${memory} -Xmx${memory} ${jvmOpts}''
         else
           (
             if isDerivation serverCfg.server then
@@ -206,6 +202,47 @@ let
           serverCfg.directory
         ];
       };
+    };
+
+  mkBackupServiceOverride =
+    name: serverCfg:
+    nameValuePair "minecraft-server-backup@${name}" {
+      overrideStrategy = "asDropin";
+
+      unitConfig.ConditionDirectoryNotEmpty = serverCfg.directory;
+
+      serviceConfig = {
+        WorkingDirectory = serverCfg.directory;
+
+        EnvironmentFile = optionals (serverCfg.environmentFile != null) [
+          ""
+          "-${toString serverCfg.environmentFile}"
+        ];
+        Environment = [
+          "BACKUP_PATH=${serverCfg.backup.path}"
+          "SERVER_DIR=${serverCfg.directory}"
+        ];
+
+        ReadWritePaths = [
+          ""
+          "${cfg.dataDir}/backups"
+          serverCfg.directory
+          serverCfg.backup.path
+          "-${runDir}/${name}.stdin"
+        ];
+      };
+    };
+
+  mkBackupTimerOverride =
+    name: serverCfg:
+    nameValuePair "minecraft-server-backup@${name}" {
+      overrideStrategy = "asDropin";
+
+      wantedBy = [ "timers.target" ];
+      timerConfig.OnCalendar = [
+        ""
+        serverCfg.backup.onCalendar
+      ];
     };
 in
 {
@@ -284,84 +321,228 @@ in
       "d ${cfg.dataDir} 0750 ${cfg.user} ${cfg.user} -"
     ]
     ++ (mapAttrsToList (
-      name: serverCfg: "d ${serverCfg.directory} 0750 ${cfg.user} ${cfg.user} -"
-    ) enabledServers);
+      name: serverCfg: "d ${serverCfg.directory}   0750 ${cfg.user} ${cfg.user} -"
+    ) enabledServers)
+    ++ (mapAttrsToList (
+      name: serverCfg: "d ${serverCfg.backup.path} 0750 ${cfg.user} ${cfg.user} -"
+    ) backupServers);
 
-    systemd.services = (mapAttrs' mkServiceOverride enabledServers) // {
-      "minecraft-server@" = {
-        unitConfig = {
-          Description = "Minecraft Server - %i";
-          Requires = "minecraft-server@%i.socket";
-          After = [
-            "network.target"
-            "minecraft-server@%i.socket"
-          ];
-          ConditionPathExists = "${cfg.dataDir}/%i";
+    systemd.services =
+      (mapAttrs' mkServiceOverride enabledServers)
+      // (mapAttrs' mkBackupServiceOverride backupServers)
+      // {
+        "minecraft-server@" = {
+          unitConfig = {
+            Description = "Minecraft Server - %i";
+            Requires = "minecraft-server@%i.socket";
+            After = [
+              "network.target"
+              "minecraft-server@%i.socket"
+            ];
+            ConditionPathExists = "${cfg.dataDir}/%i";
+          };
+
+          serviceConfig = {
+            ExecStart = "${mkRunServerJar cfg.javaPackage} \"\${JAR_NAME}\" -Xms\${MEM} -Xmx\${MEM} \${JVM_OPTS}";
+            ExecStop = ''${stopServer} "%i"'';
+            Restart = "on-failure";
+            RestartSec = "60s";
+
+            WorkingDirectory = "${cfg.dataDir}/%i";
+
+            User = cfg.user;
+            Group = cfg.user;
+
+            Sockets = "minecraft-server@%i.socket";
+            StandardInput = "socket";
+            StandardOutput = "journal";
+            StandardError = "journal";
+
+            # Set default variables
+            Environment = [
+              "JAR_NAME=server.jar"
+              "MEM=${cfg.memory}"
+              ''"JVM_OPTS=${concatStringsSep " " cfg.jvmOpts}"''
+            ];
+
+            # Override default variable values in environment file
+            EnvironmentFile = "-${cfg.dataDir}/%i/.env";
+
+            # this is necessary to keep systemd from killing the process before it exits after ExecStop is called
+            KillSignal = "SIGCONT";
+
+            # Hardening
+            CapabilityBoundingSet = [ "" ];
+            DeviceAllow = [ "" ];
+            PrivateDevices = true;
+            LockPersonality = true;
+            PrivateTmp = true;
+            PrivateUsers = true;
+            ProtectClock = true;
+            ProtectControlGroups = true;
+            ProtectHome = true;
+            ProtectHostname = true;
+            ProtectKernelLogs = true;
+            ProtectKernelModules = true;
+            ProtectKernelTunables = true;
+            ProtectProc = "invisible";
+            RestrictAddressFamilies = [
+              "AF_INET"
+              "AF_INET6"
+            ];
+            RestrictNamespaces = true;
+            RestrictRealtime = true;
+            RestrictSUIDSGID = true;
+            SystemCallArchitectures = "native";
+            UMask = "0077";
+            ProtectSystem = "strict";
+            ReadWritePaths = [
+              "${runDir}/%i.stdin"
+              "${cfg.dataDir}/%i"
+            ];
+            NoNewPrivileges = true;
+            RemoveIPC = true;
+          };
         };
 
-        serviceConfig = {
-          ExecStart = "${mkRunServerJar cfg.javaPackage} \${JAR_NAME} -Xms\${MEM} -Xmx\${MEM} \${JVM_OPTS}";
-          ExecStop = ''${stopServer} "%i"'';
-          Restart = "on-failure";
-          RestartSec = "60s";
+        "minecraft-server-backup@" = {
+          unitConfig = {
+            Description = "Minecraft Server Backup Task - %i";
+            ConditionDirectoryNotEmpty = "${cfg.dataDir}/%i";
+            PartOf = "minecraft-server@%i.service";
+          };
 
-          WorkingDirectory = "${cfg.dataDir}/%i";
+          serviceConfig = {
+            Type = "oneshot";
 
-          User = cfg.user;
-          Group = cfg.user;
+            ExecStartPre = "${pkgs.writeShellScript "minecraft-server-backup-pre" ''
+              if [ $# -ne 3 ]; then
+                  echo "Must supply server name and backup path"
+                  exit 1
+              fi
 
-          Sockets = "minecraft-server@%i.socket";
-          StandardInput = "socket";
-          StandardOutput = "journal";
-          StandardError = "journal";
+              SERVER_NAME=$1
+              SERVER_DIR=$2
+              BACKUP_PATH=$3
+              SOCKET="${runDir}/$SERVER_NAME.stdin"
 
-          # Set default variables
-          Environment = [
-            "JAR_NAME=server.jar"
-            "MEM=${cfg.memory}"
-            ''"JVM_OPTS=${concatStringsSep " " cfg.jvmOpts}"''
-          ];
+              ${pkgs.coreutils}/bin/mkdir -p ''${BACKUP_PATH}
 
-          # Override default variable values in environment file
-          EnvironmentFile = "-${cfg.dataDir}/%i/.env";
+              if [ -p "$SOCKET" ]; then
+                echo "say Running backup..." > "$SOCKET"
+                echo "save-off" > "$SOCKET"
+                sleep 2
+                echo "save-all" > "$SOCKET"
 
-          # this is necessary to keep systemd from killing the process before it exits after ExecStop is called
-          KillSignal = "SIGCONT";
+                if [ -f "$SERVER_DIR/logs/latest.log" ]; then
+                  ${pkgs.coreutils}/bin/timeout 60 sh -c '
+                      stdbuf -oL tail -n2 -f "$1" | sed "/Saved the game/q"
+                    ' sh "$SERVER_DIR/logs/latest.log" || true
+                fi
+              fi
+            ''} \"%i\" \"\${SERVER_DIR}\" \"\${BACKUP_PATH}\"";
 
-          # Hardening
-          CapabilityBoundingSet = [ "" ];
-          DeviceAllow = [ "" ];
-          PrivateDevices = true;
-          LockPersonality = true;
-          PrivateTmp = true;
-          PrivateUsers = true;
-          ProtectClock = true;
-          ProtectControlGroups = true;
-          ProtectHome = true;
-          ProtectHostname = true;
-          ProtectKernelLogs = true;
-          ProtectKernelModules = true;
-          ProtectKernelTunables = true;
-          ProtectProc = "invisible";
-          RestrictAddressFamilies = [
-            "AF_INET"
-            "AF_INET6"
-          ];
-          RestrictNamespaces = true;
-          RestrictRealtime = true;
-          RestrictSUIDSGID = true;
-          SystemCallArchitectures = "native";
-          UMask = "0077";
-          ProtectSystem = "strict";
-          ReadWritePaths = [
-            "${runDir}/%i.stdin"
-            "${cfg.dataDir}/%i"
-          ];
-          NoNewPrivileges = true;
-          RemoveIPC = true;
+            ExecStart = "${
+              lib.getExe (
+                pkgs.writeShellApplication {
+                  name = "minecraft-server-backup";
+                  runtimeInputs = with pkgs; [
+                    gnutar
+                    xz
+                  ];
+                  text = ''
+                    if [ $# -ne 3 ]; then
+                        echo "Must supply server name and backup path"
+                        exit 1
+                    fi
+
+                    SERVER_NAME=$1
+                    SERVER_DIR=$2
+                    BACKUP_PATH=$3
+                    DATE=$(date +"%F_%H-%M-%S")
+
+                    tar \
+                      --exclude=backup \
+                      --exclude=cache \
+                      --exclude=crash-reports \
+                      --exclude=debug \
+                      --exclude=libraries \
+                      --exclude=logs \
+                      --exclude=versions \
+                      --exclude=.env \
+                      -cJf "$BACKUP_PATH/$SERVER_NAME-$DATE".tar.xz \
+                      -C "$SERVER_DIR" .
+                  '';
+                }
+              )
+            } \"%i\" \"\${SERVER_DIR}\" \"\${BACKUP_PATH}\"";
+
+            ExecStopPost = "${pkgs.writeShellScript "minecraft-server-backup-post" ''
+              if [ $# -ne 2 ]; then
+                  echo "Must supply server name and backup path"
+                  exit 1
+              fi
+
+              SERVER_NAME=$1
+              BACKUP_PATH=$2
+              SOCKET="${runDir}/$SERVER_NAME.stdin"
+
+              if [ -p "$SOCKET" ]; then
+                echo "save-on" > "$SOCKET"
+                echo "say Backup complete." > "$SOCKET"
+              fi
+            ''} \"%i\" \"\${BACKUP_PATH}\"";
+
+            WorkingDirectory = "${cfg.dataDir}/%i";
+
+            User = cfg.user;
+            Group = cfg.user;
+
+            StandardOutput = "journal";
+            StandardError = "journal";
+
+            # Set default variables
+            Environment = [
+              "BACKUP_PATH=${cfg.dataDir}/backups/%i"
+              "SERVER_DIR=${cfg.dataDir}/%i"
+            ];
+
+            # Override default variable values in environment file
+            EnvironmentFile = "-${cfg.dataDir}/%i/.env";
+
+            # Hardening
+            CapabilityBoundingSet = [ "" ];
+            DeviceAllow = [ "" ];
+            PrivateDevices = true;
+            LockPersonality = true;
+            PrivateTmp = true;
+            PrivateUsers = true;
+            ProtectClock = true;
+            ProtectControlGroups = true;
+            ProtectHome = true;
+            ProtectHostname = true;
+            ProtectKernelLogs = true;
+            ProtectKernelModules = true;
+            ProtectKernelTunables = true;
+            ProtectProc = "invisible";
+            PrivateNetwork = true;
+            RestrictAddressFamilies = "none";
+            RestrictNamespaces = true;
+            RestrictRealtime = true;
+            RestrictSUIDSGID = true;
+            SystemCallArchitectures = "native";
+            UMask = "0077";
+            ProtectSystem = "strict";
+            ReadWritePaths = [
+              "${cfg.dataDir}/backups"
+              "${cfg.dataDir}/%i"
+              "-${runDir}/%i.stdin"
+            ];
+            NoNewPrivileges = true;
+            RemoveIPC = true;
+          };
         };
       };
-    };
 
     systemd.sockets."minecraft-server@" = {
       bindsTo = [ "minecraft-server@%i.service" ];
@@ -373,6 +554,17 @@ in
         SocketGroup = cfg.user;
         RemoveOnStop = true;
         FlushPending = true;
+      };
+    };
+
+    systemd.timers = (mapAttrs' mkBackupTimerOverride backupServers) // {
+      "minecraft-server-backup@" = {
+        unitConfig.Description = "Minecraft Server Backup Task Schedule - %i";
+        timerConfig = {
+          OnCalendar = "weekly";
+          Persistent = true;
+          Unit = "minecraft-server-backup@%i.service";
+        };
       };
     };
 
