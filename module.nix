@@ -149,14 +149,13 @@ let
     let
       javaPackage = if serverCfg.javaPackage != null then serverCfg.javaPackage else cfg.javaPackage;
       runServerJar = mkRunServerJar javaPackage;
-      memory = if serverCfg.memory != null then serverCfg.memory else "\${MEM}";
-      jvmOpts =
-        if serverCfg.jvmOpts != null then concatStringsSep " " serverCfg.jvmOpts else "\${JVM_OPTS}";
+      memory = if serverCfg.memory != null then serverCfg.memory else "$MEM";
+      jvmOpts = if serverCfg.jvmOpts != null then concatStringsSep " " serverCfg.jvmOpts else "$JVM_OPTS";
       serverJar =
         if builtins.typeOf serverCfg.server == "string" || builtins.typeOf serverCfg.server == "path" then
           toString serverCfg.server
         else
-          "\${JAR_NAME}";
+          "$JAR_NAME";
       execStart =
         if isDerivation serverCfg.server then
           "${getExe serverCfg.server} -server -Xms${memory} -Xmx${memory} ${jvmOpts}"
@@ -344,7 +343,7 @@ in
           };
 
           serviceConfig = {
-            ExecStart = "${mkRunServerJar cfg.javaPackage} \"\${JAR_NAME}\" -Xms\${MEM} -Xmx\${MEM} \${JVM_OPTS}";
+            ExecStart = "${mkRunServerJar cfg.javaPackage} \"$JAR_NAME\" -Xms$MEM -Xmx$MEM $JVM_OPTS";
             ExecStop = ''${stopServer} "%i"'';
             Restart = "on-failure";
             RestartSec = "60s";
@@ -441,7 +440,7 @@ in
                     ' sh "$SERVER_DIR/logs/latest.log" || true
                 fi
               fi
-            ''} \"%i\" \"\${SERVER_DIR}\" \"\${BACKUP_PATH}\"";
+            ''} \"%i\" \"$SERVER_DIR\" \"$BACKUP_PATH\"";
 
             ExecStart = "${
               lib.getExe (
@@ -476,7 +475,7 @@ in
                   '';
                 }
               )
-            } \"%i\" \"\${SERVER_DIR}\" \"\${BACKUP_PATH}\"";
+            } \"%i\" \"$SERVER_DIR\" \"$BACKUP_PATH\"";
 
             ExecStopPost = "${pkgs.writeShellScript "minecraft-server-backup-post" ''
               if [ $# -ne 2 ]; then
@@ -492,7 +491,7 @@ in
                 echo "save-on" > "$SOCKET"
                 echo "say Backup complete." > "$SOCKET"
               fi
-            ''} \"%i\" \"\${BACKUP_PATH}\"";
+            ''} \"%i\" \"$BACKUP_PATH\"";
 
             WorkingDirectory = "${cfg.dataDir}/%i";
 
