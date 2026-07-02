@@ -156,17 +156,18 @@ let
         if builtins.typeOf serverCfg.server == "string" || builtins.typeOf serverCfg.server == "path" then
           toString serverCfg.server
         else
-          null;
+          "\${JAR_NAME}";
       execStart =
-        if serverJar != null then
-          ''${runServerJar} "${serverJar}" -Xms${memory} -Xmx${memory} ${jvmOpts}''
+        if isDerivation serverCfg.server then
+          "${getExe serverCfg.server} -server -Xms${memory} -Xmx${memory} ${jvmOpts}"
         else
-          (
-            if isDerivation serverCfg.server then
-              "${getExe serverCfg.server} -server -Xms${memory} -Xmx${memory} ${jvmOpts}"
-            else
-              null
-          );
+          ''${runServerJar} "${serverJar}" -Xms${memory} -Xmx${memory} ${jvmOpts}'';
+
+      shouldOverrideExecStart =
+        serverCfg.server != null
+        || serverCfg.javaPackage != null
+        || serverCfg.memory != null
+        || serverCfg.jvmOpts != null;
     in
     nameValuePair "minecraft-server@${name}" {
       overrideStrategy = "asDropin";
@@ -176,7 +177,7 @@ let
       unitConfig.ConditionPathExists = serverCfg.directory;
 
       serviceConfig = {
-        ExecStart = optionals (execStart != null) [
+        ExecStart = optionals shouldOverrideExecStart [
           ""
           execStart
         ];
