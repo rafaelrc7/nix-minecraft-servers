@@ -149,14 +149,17 @@ let
     let
       javaPackage = if serverCfg.javaPackage != null then serverCfg.javaPackage else cfg.javaPackage;
       runServerJar = mkRunServerJar javaPackage;
-      memory = if serverCfg.memory != null then serverCfg.memory else "\${MEM}";
-      jvmOpts =
-        if serverCfg.jvmOpts != null then concatStringsSep " " serverCfg.jvmOpts else "\${JVM_OPTS}";
-      serverJar =
-        if builtins.typeOf serverCfg.server == "string" || builtins.typeOf serverCfg.server == "path" then
-          toString serverCfg.server
-        else
-          "\${JAR_NAME}";
+
+      shouldOverrideMemory = serverCfg.memory != null;
+      memory = if shouldOverrideMemory then serverCfg.memory else "\${MEM}";
+
+      shouldOverrideJvmOpts = serverCfg.jvmOpts != null;
+      jvmOpts = if shouldOverrideJvmOpts then concatStringsSep " " serverCfg.jvmOpts else "\${JVM_OPTS}";
+
+      shouldOverrideServerJar =
+        builtins.typeOf serverCfg.server == "string" || builtins.typeOf serverCfg.server == "path";
+      serverJar = if shouldOverrideServerJar then toString serverCfg.server else "\${JAR_NAME}";
+
       execStart =
         if isDerivation serverCfg.server then
           "${getExe serverCfg.server} -server -Xms${memory} -Xmx${memory} ${jvmOpts}"
@@ -193,9 +196,9 @@ let
           "-${toString serverCfg.environmentFile}"
         ];
         Environment =
-          (optional (serverJar != null) ''"JAR_NAME=${serverJar}"'')
-          ++ (optional (serverCfg.jvmOpts != null) ''"JVM_OPTS=${jvmOpts}"'')
-          ++ (optional (serverCfg.memory != null) ''"MEM=${memory}"'');
+          (optional shouldOverrideServerJar ''"JAR_NAME=${serverJar}"'')
+          ++ (optional shouldOverrideJvmOpts ''"JVM_OPTS=${jvmOpts}"'')
+          ++ (optional shouldOverrideMemory ''"MEM=${memory}"'');
 
         ReadWritePaths = [
           ""
