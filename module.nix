@@ -192,9 +192,9 @@ let
           "-${toString serverCfg.environmentFile}"
         ];
         Environment =
-          (optional (serverJar != null) "JAR_NAME=${serverJar}")
-          ++ (optional (serverCfg.jvmOpts != null) "JVM_OPTS=${jvmOpts}")
-          ++ (optional (serverCfg.memory != null) "MEM=${memory}");
+          (optional (serverJar != null) ''"JAR_NAME=${serverJar}"'')
+          ++ (optional (serverCfg.jvmOpts != null) ''"JVM_OPTS=${jvmOpts}"'')
+          ++ (optional (serverCfg.memory != null) ''"MEM=${memory}"'');
 
         ReadWritePaths = [
           ""
@@ -219,8 +219,8 @@ let
           "-${toString serverCfg.environmentFile}"
         ];
         Environment = [
-          "BACKUP_PATH=${serverCfg.backup.path}"
-          "SERVER_DIR=${serverCfg.directory}"
+          ''"BACKUP_PATH=${serverCfg.backup.path}"''
+          ''"SERVER_DIR=${serverCfg.directory}"''
         ];
 
         ReadWritePaths = [
@@ -360,8 +360,8 @@ in
 
             # Set default variables
             Environment = [
-              "JAR_NAME=server.jar"
-              "MEM=${cfg.memory}"
+              ''"JAR_NAME=server.jar"''
+              ''"MEM=${cfg.memory}"''
               ''"JVM_OPTS=${concatStringsSep " " cfg.jvmOpts}"''
             ];
 
@@ -503,8 +503,8 @@ in
 
             # Set default variables
             Environment = [
-              "BACKUP_PATH=${cfg.dataDir}/backups/%i"
-              "SERVER_DIR=${cfg.dataDir}/%i"
+              ''"BACKUP_PATH=${cfg.dataDir}/backups/%i"''
+              ''"SERVER_DIR=${cfg.dataDir}/%i"''
             ];
 
             # Override default variable values in environment file
